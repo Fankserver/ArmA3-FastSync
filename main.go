@@ -41,6 +41,7 @@ type DownloadWork struct {
 	Checksum string
 	WP       *workpool.WorkPool
 	CTR      *counter.Counter
+	Client   *http.Client
 }
 
 func (d *DownloadWork) DoWork(workRoutine int) {
@@ -78,7 +79,7 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 			log.Printf("correct file does exist: skipping")
 			download = false
 		} else {
-			log.Printf("checksum mismatch: downloading file again")
+			log.Printf("checksum mismatch: downloading file")
 		}
 	} else {
 		if os.IsNotExist(err) {
@@ -98,27 +99,41 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 
 	// download the file
 	if download {
-		// http request
+
+		// assemble http request
 		dlUrl := d.Url + d.Path
 		log.Printf("dl url: %s", dlUrl)
-		resp, err := http.Get(dlUrl)
-		defer resp.Body.Close()
 
-		// check response
+		req, err := http.NewRequest("GET", dlUrl, nil)
 		if err != nil {
 			log.Printf("ERROR: %s", err)
 			return
 		}
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("ERROR: %s", resp.Status)
-			return
-		}
 
-		// create file
-		f, err := os.Create(path)
+		// resume partial download if we already have some bytes
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0775)
 		defer f.Close()
 		if err != nil {
 			log.Printf("ERROR: %s", err)
+			return
+		}
+
+		info, err := f.Stat()
+		if err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+
+		req.Header.Add("Range", fmt.Sprintf("bytes=%d-", info.Size()))
+		log.Printf("resuming download at %d byte", info.Size())
+
+		// do request
+		resp, err := d.Client.Do(req)
+		defer resp.Body.Close()
+
+		// check response
+		if err != nil || resp.StatusCode != (http.StatusOK|http.StatusPartialContent) {
+			log.Printf("ERROR: %s (%s)", err, resp.Status)
 			return
 		}
 
@@ -158,6 +173,7 @@ func main() {
 
 	workPool := workpool.New(runtime.NumCPU()*3, MAX_CONCURRENT_DOWNLOADS)
 	bps := new(counter.Counter)
+	client := &http.Client{}
 
 	// parse flags
 	syncpath := flag.String("sync", "default.a3sync", "A3FastSync synchronization file")
@@ -189,6 +205,7 @@ func main() {
 				Checksum: sync.Files[k].Checksum,
 				WP:       workPool,
 				CTR:      bps,
+				Client:   client,
 			}
 
 			err := workPool.PostWork("work_queue_routine", work)
@@ -206,7 +223,7 @@ func main() {
 		case <-time.After(time.Second):
 			currentBps := bps.Value()
 			bps.Reset()
-			fmt.Printf("byte/s: %d\n", currentBps)
+			fmt.Printf("Mbyte/s: %f\n", float32(currentBps)/float32(1024*1024))
 		}
 	}
 }

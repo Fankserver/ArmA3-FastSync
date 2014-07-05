@@ -1,0 +1,10 @@
+{
+	"version": 1,
+	"server": "http://teamspeak.fankservercdn.com",
+	"files": [
+		{ 
+			"path": "/VMware-VIMSetup-all-5.5.0-1312299.iso",
+			"check": "000000"
+		}
+	]
+}
