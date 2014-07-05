@@ -59,7 +59,7 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 		// check whether the file already exists
 		download := true
 		if _, err := os.Stat(path); err == nil {
-			log.Printf("%d file already exists - checking checksum...", workRoutine)
+			log.Printf("%d file already exists - verifying checksum...", workRoutine)
 
 			// calculate SHA1 checksum
 			f, err := os.Open(path)
@@ -77,7 +77,7 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 			hash := fmt.Sprintf("%x", hasher.Sum(nil))
 			log.Printf("%d computed checksum: %s", workRoutine, hash)
 			if hash == d.Checksum {
-				log.Printf("%d correct file does exist: skipping", workRoutine)
+				log.Printf("%d valid file exists: skipping", workRoutine)
 				download = false
 			} else {
 				log.Printf("%d checksum mismatch: downloading file", workRoutine)
@@ -242,6 +242,10 @@ func main() {
 		select {
 		// measure download speed
 		case <-time.After(time.Second):
+			if workPool.ActiveRoutines() < 1 {
+				log.Printf("no jobs available - finished")
+				return
+			}
 			currentBps := bps.Value()
 			bps.Reset()
 			fmt.Printf("Mbyte/s: %.2f\n", float32(currentBps)/float32(1024*1024))
