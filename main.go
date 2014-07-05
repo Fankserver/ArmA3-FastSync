@@ -2,6 +2,7 @@ package main
 
 import (
 	"A3FastSync/counter"
+	"A3FastSync/downloader"
 	"crypto/sha1"
 	"encoding/json"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,9 +36,11 @@ type SynchFile struct {
 }
 
 type DownloadWork struct {
+	Url      string
 	Path     string
 	Checksum string
 	WP       *workpool.WorkPool
+	CTR      *counter.Counter
 }
 
 func (d *DownloadWork) DoWork(workRoutine int) {
@@ -51,16 +55,17 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 	log.Printf("computed path: %s", path)
 
 	// check whether the file already exists
+	download := true
 	if _, err := os.Stat(path); err == nil {
 		log.Printf("file already exists - checking checksum...")
 
 		// calculate SHA1 checksum
 		f, err := os.Open(path)
+		defer f.Close()
 		if err != nil {
 			log.Printf("ERROR: %s", err)
 			return
 		}
-		defer f.Close()
 
 		hasher := sha1.New()
 		if _, err := io.Copy(hasher, f); err != nil {
@@ -70,9 +75,81 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 		hash := fmt.Sprintf("%x", hasher.Sum(nil))
 		log.Printf("computed checksum: %s", hash)
 		if hash == d.Checksum {
-			log.Printf("correct file does exist - skipping")
+			log.Printf("correct file does exist: skipping")
+			download = false
+		} else {
+			log.Printf("checksum mismatch: downloading file again")
+		}
+	} else {
+		if os.IsNotExist(err) {
+			// file does not exist
+		} else {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+	}
+
+	// create the directory if needed
+	err := os.MkdirAll(filepath.Dir(path), 0775)
+	if err != nil {
+		log.Printf("ERROR: %s", err)
+		return
+	}
+
+	// download the file
+	if download {
+		// http request
+		dlUrl := d.Url + d.Path
+		log.Printf("dl url: %s", dlUrl)
+		resp, err := http.Get(dlUrl)
+		defer resp.Body.Close()
+
+		// check response
+		if err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("ERROR: %s", resp.Status)
+			return
 		}
 
+		// create file
+		f, err := os.Create(path)
+		defer f.Close()
+		if err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+
+		body := &downloader.Downloader{Reader: resp.Body, Counter: d.CTR}
+
+		// write to file
+		log.Printf("content length: %d", resp.ContentLength)
+		n, err := io.Copy(f, body)
+		log.Printf("successfully read %d bytes", n)
+
+		// calculate SHA1 checksum
+		f, err = os.Open(path)
+		defer f.Close()
+		if err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+
+		hasher := sha1.New()
+		if _, err := io.Copy(hasher, f); err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+		hash := fmt.Sprintf("%x", hasher.Sum(nil))
+		log.Printf("computed checksum: %s", hash)
+		if hash != d.Checksum {
+			log.Printf("download error: checksum mismatch")
+			return
+		} else {
+			log.Printf("download successful: checksum matches")
+		}
 	}
 }
 
@@ -107,9 +184,11 @@ func main() {
 	go func() {
 		for k := range sync.Files {
 			work := &DownloadWork{
+				Url:      sync.Server,
 				Path:     sync.Files[k].Path,
 				Checksum: sync.Files[k].Checksum,
 				WP:       workPool,
+				CTR:      bps,
 			}
 
 			err := workPool.PostWork("work_queue_routine", work)
