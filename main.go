@@ -2,15 +2,16 @@ package main
 
 import (
 	"A3FastSync/counter"
+	"crypto/sha1"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/goinggo/workpool"
-	//"io"
+	"io"
 	"io/ioutil"
 	"log"
-	//"net/http"
-	//"os"
+	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -18,36 +19,67 @@ import (
 const (
 	MAX_CONCURRENT_DOWNLOADS = 1
 	DEV_TEST_URL             = "http://teamspeak.fankservercdn.com/test.txt"
+	DL_ROOT                  = "/home/nano/go/src/A3FastSync/dl"
 )
 
 type DownloadFile struct {
-	Url      string `json:"url"`
+	Path     string `json:"path"`
 	Checksum string `json:"check"`
 }
 
 type SynchFile struct {
 	Version int            `json:"version"`
+	Server  string         `json:"server"`
 	Files   []DownloadFile `json:"files"`
 }
 
 type DownloadWork struct {
-	Url      string
+	Path     string
 	Checksum string
 	WP       *workpool.WorkPool
 }
 
 func (d *DownloadWork) DoWork(workRoutine int) {
+	// build path
+	path := filepath.Clean(d.Path)
+	if !filepath.IsAbs(path) {
+		log.Printf("ERROR: relative paths are not allowed for security reasons (%s)", filepath.Join(DL_ROOT, path))
+		return
+	}
+	path = filepath.Join(DL_ROOT, path)
+
+	log.Printf("computed path: %s", path)
+
 	// check whether the file already exists
-	if _, err := os.Stat(filename); err == nil {
-		log.Printf("file already exists: %s checking checksum...")
-		process(filename)
+	if _, err := os.Stat(path); err == nil {
+		log.Printf("file already exists - checking checksum...")
+
+		// calculate SHA1 checksum
+		f, err := os.Open(path)
+		if err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+		defer f.Close()
+
+		hasher := sha1.New()
+		if _, err := io.Copy(hasher, f); err != nil {
+			log.Printf("ERROR: %s", err)
+			return
+		}
+		hash := fmt.Sprintf("%x", hasher.Sum(nil))
+		log.Printf("computed checksum: %s", hash)
+		if hash == d.Checksum {
+			log.Printf("correct file does exist - skipping")
+		}
+
 	}
 }
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	workPool := workpool.New(runtime.NumCPU(), MAX_CONCURRENT_DOWNLOADS)
+	workPool := workpool.New(runtime.NumCPU()*3, MAX_CONCURRENT_DOWNLOADS)
 	bps := new(counter.Counter)
 
 	// parse flags
@@ -75,7 +107,7 @@ func main() {
 	go func() {
 		for k := range sync.Files {
 			work := &DownloadWork{
-				Url:      sync.Files[k].Url,
+				Path:     sync.Files[k].Path,
 				Checksum: sync.Files[k].Checksum,
 				WP:       workPool,
 			}
