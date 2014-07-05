@@ -5,6 +5,10 @@
 		{ 
 			"path": "/test/zwiebel/test.bmp",
 			"check": "9c29a557b425f5cd91fbbd7fd7da956539f9d936"
+		},
+		{ 
+			"path": "/bujh12b.gif",
+			"check": "320e58932febd0a76aabd114c4a9cdb42fa3e011"
 		}
 	]
 }

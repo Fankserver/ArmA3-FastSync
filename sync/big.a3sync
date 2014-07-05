@@ -5,6 +5,10 @@
 		{ 
 			"path": "/VMware-VIMSetup-all-5.5.0-1312299.iso",
 			"check": "000000"
+		},
+		{ 
+			"path": "/bujh12b.gif",
+			"check": "320e58932febd0a76aabd114c4a9cdb42fa3e011"
 		}
 	]
 }

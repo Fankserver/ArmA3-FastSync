@@ -45,126 +45,147 @@ type DownloadWork struct {
 }
 
 func (d *DownloadWork) DoWork(workRoutine int) {
-	// build path
-	path := filepath.Clean(d.Path)
-	if !filepath.IsAbs(path) {
-		log.Printf("ERROR: relative paths are not allowed for security reasons (%s)", filepath.Join(DL_ROOT, path))
+	for {
+		// build path
+		path := filepath.Clean(d.Path)
+		if !filepath.IsAbs(path) {
+			log.Printf("%d ERROR: relative paths are not allowed for security reasons (%s)", workRoutine, filepath.Join(DL_ROOT, path))
+			return
+		}
+		path = filepath.Join(DL_ROOT, path)
+
+		log.Printf("%d computed path: %s", workRoutine, path)
+
+		// check whether the file already exists
+		download := true
+		if _, err := os.Stat(path); err == nil {
+			log.Printf("%d file already exists - checking checksum...", workRoutine)
+
+			// calculate SHA1 checksum
+			f, err := os.Open(path)
+			defer f.Close()
+			if err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+
+			hasher := sha1.New()
+			if _, err := io.Copy(hasher, f); err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+			hash := fmt.Sprintf("%x", hasher.Sum(nil))
+			log.Printf("%d computed checksum: %s", workRoutine, hash)
+			if hash == d.Checksum {
+				log.Printf("%d correct file does exist: skipping", workRoutine)
+				download = false
+			} else {
+				log.Printf("%d checksum mismatch: downloading file", workRoutine)
+			}
+		} else {
+			if os.IsNotExist(err) {
+				// file does not exist
+			} else {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+		}
+
+		// create the directory if needed
+		err := os.MkdirAll(filepath.Dir(path), 0775)
+		if err != nil {
+			log.Printf("%d ERROR: %s", workRoutine, err)
+			return
+		}
+
+		// download the file
+		if download {
+
+			// assemble http request
+			dlUrl := d.Url + d.Path
+			log.Printf("%d dl url: %s", workRoutine, dlUrl)
+
+			req, err := http.NewRequest("GET", dlUrl, nil)
+			if err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+
+			// resume partial download if we already have some bytes
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0775)
+			defer f.Close()
+			if err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+
+			info, err := f.Stat()
+			if err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+
+			req.Header.Add("Range", fmt.Sprintf("bytes=%d-", info.Size()))
+			log.Printf("%d resuming download at %d byte", workRoutine, info.Size())
+
+			// do request
+			resp, err := d.Client.Do(req)
+			defer resp.Body.Close()
+
+			// check response
+			if err != nil {
+				log.Printf("%d ERROR: %v (%s)", workRoutine, err, resp.Status)
+				return
+			}
+
+			switch resp.StatusCode {
+			case http.StatusOK:
+			case http.StatusPartialContent:
+			case http.StatusRequestedRangeNotSatisfiable:
+			default:
+				log.Printf("%d ERROR: %v (%s)", workRoutine, err, resp.Status)
+			}
+
+			// reset file if content is too long (file corrupted)
+			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				err = os.Remove(path)
+				if err != nil {
+					log.Printf("%d ERROR: %s", workRoutine, err)
+					return
+				}
+				continue
+			}
+
+			body := &downloader.Downloader{Reader: resp.Body, Counter: d.CTR}
+
+			// write to file
+			log.Printf("%d content length: %d", workRoutine, resp.ContentLength)
+			n, err := io.Copy(f, body)
+			log.Printf("%d successfully read %d bytes", workRoutine, n)
+
+			// calculate SHA1 checksum
+			f, err = os.Open(path)
+			defer f.Close()
+			if err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+
+			hasher := sha1.New()
+			if _, err := io.Copy(hasher, f); err != nil {
+				log.Printf("%d ERROR: %s", workRoutine, err)
+				return
+			}
+			hash := fmt.Sprintf("%x", hasher.Sum(nil))
+			log.Printf("%d computed checksum: %s", workRoutine, hash)
+			if hash != d.Checksum {
+				log.Printf("%d download error: checksum mismatch", workRoutine)
+				return
+			} else {
+				log.Printf("%d download successful: checksum matches", workRoutine)
+			}
+		}
 		return
-	}
-	path = filepath.Join(DL_ROOT, path)
-
-	log.Printf("computed path: %s", path)
-
-	// check whether the file already exists
-	download := true
-	if _, err := os.Stat(path); err == nil {
-		log.Printf("file already exists - checking checksum...")
-
-		// calculate SHA1 checksum
-		f, err := os.Open(path)
-		defer f.Close()
-		if err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-
-		hasher := sha1.New()
-		if _, err := io.Copy(hasher, f); err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-		hash := fmt.Sprintf("%x", hasher.Sum(nil))
-		log.Printf("computed checksum: %s", hash)
-		if hash == d.Checksum {
-			log.Printf("correct file does exist: skipping")
-			download = false
-		} else {
-			log.Printf("checksum mismatch: downloading file")
-		}
-	} else {
-		if os.IsNotExist(err) {
-			// file does not exist
-		} else {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-	}
-
-	// create the directory if needed
-	err := os.MkdirAll(filepath.Dir(path), 0775)
-	if err != nil {
-		log.Printf("ERROR: %s", err)
-		return
-	}
-
-	// download the file
-	if download {
-
-		// assemble http request
-		dlUrl := d.Url + d.Path
-		log.Printf("dl url: %s", dlUrl)
-
-		req, err := http.NewRequest("GET", dlUrl, nil)
-		if err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-
-		// resume partial download if we already have some bytes
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0775)
-		defer f.Close()
-		if err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-
-		info, err := f.Stat()
-		if err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-
-		req.Header.Add("Range", fmt.Sprintf("bytes=%d-", info.Size()))
-		log.Printf("resuming download at %d byte", info.Size())
-
-		// do request
-		resp, err := d.Client.Do(req)
-		defer resp.Body.Close()
-
-		// check response
-		if err != nil || resp.StatusCode != (http.StatusOK|http.StatusPartialContent) {
-			log.Printf("ERROR: %s (%s)", err, resp.Status)
-			return
-		}
-
-		body := &downloader.Downloader{Reader: resp.Body, Counter: d.CTR}
-
-		// write to file
-		log.Printf("content length: %d", resp.ContentLength)
-		n, err := io.Copy(f, body)
-		log.Printf("successfully read %d bytes", n)
-
-		// calculate SHA1 checksum
-		f, err = os.Open(path)
-		defer f.Close()
-		if err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-
-		hasher := sha1.New()
-		if _, err := io.Copy(hasher, f); err != nil {
-			log.Printf("ERROR: %s", err)
-			return
-		}
-		hash := fmt.Sprintf("%x", hasher.Sum(nil))
-		log.Printf("computed checksum: %s", hash)
-		if hash != d.Checksum {
-			log.Printf("download error: checksum mismatch")
-			return
-		} else {
-			log.Printf("download successful: checksum matches")
-		}
 	}
 }
 
@@ -223,7 +244,7 @@ func main() {
 		case <-time.After(time.Second):
 			currentBps := bps.Value()
 			bps.Reset()
-			fmt.Printf("Mbyte/s: %f\n", float32(currentBps)/float32(1024*1024))
+			fmt.Printf("Mbyte/s: %.2f\n", float32(currentBps)/float32(1024*1024))
 		}
 	}
 }
