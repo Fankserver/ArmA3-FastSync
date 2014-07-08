@@ -18,10 +18,6 @@ import (
 	"time"
 )
 
-const (
-	DL_ROOT = "dl"
-)
-
 type DownloadFile struct {
 	Path     string `json:"path"`
 	Checksum string `json:"check"`
@@ -40,17 +36,18 @@ type DownloadWork struct {
 	WP       *workpool.WorkPool
 	CTR      *counter.Counter
 	Client   *http.Client
+	Config   *Config
+}
+
+type Config struct {
+	ArmaPath string `json:"armapath"`
 }
 
 func (d *DownloadWork) DoWork(workRoutine int) {
 	for {
 		// build path
 		path := filepath.Clean(d.Path)
-		if !filepath.IsAbs(path) {
-			log.Printf("%d ERROR: relative paths are not allowed for security reasons (%s)", workRoutine, filepath.Join(DL_ROOT, path))
-			return
-		}
-		path = filepath.Join(DL_ROOT, path)
+		path = filepath.Join(d.Config.ArmaPath, path)
 
 		log.Printf("%d computed path: %s", workRoutine, path)
 
@@ -203,8 +200,23 @@ func main() {
 	index_path := flag.String("index", "", "(only for admins) Path to a directory which should be indexed. Creates a *.a3sync file.")
 	output_path := flag.String("o", "", "(only for admins) Path to a directory where the *.a3sync file should be created.")
 	max_concurrent_downloads := flag.Int("n", 2, "Concurrent download limit")
+	configpath := flag.String("config", "config/config.json", "json config file")
 
 	flag.Parse()
+
+	// json parse
+	file, e := ioutil.ReadFile(*configpath)
+	if e != nil {
+		log.Fatalf("ERROR: %v\n", e)
+		return
+	}
+
+	var config Config
+	err := json.Unmarshal(file, &config)
+	if err != nil {
+		log.Fatalf("ERROR: (%s) %s", *configpath, err)
+		return
+	}
 
 	workPool := workpool.New(runtime.NumCPU()*3, int32(*max_concurrent_downloads))
 	bps := new(counter.Counter)
@@ -246,6 +258,7 @@ func main() {
 					WP:       workPool,
 					CTR:      bps,
 					Client:   client,
+					Config:   &config,
 				}
 
 				err := workPool.PostWork("work_queue_routine", work)
