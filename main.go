@@ -19,9 +19,7 @@ import (
 )
 
 const (
-	MAX_CONCURRENT_DOWNLOADS = 3
-	DEV_TEST_URL             = "http://teamspeak.fankservercdn.com/test.txt"
-	DL_ROOT                  = "/home/nano/go/src/A3FastSync/dl"
+	DL_ROOT = "/home/nano/go/src/A3FastSync/dl"
 )
 
 type DownloadFile struct {
@@ -202,6 +200,8 @@ func main() {
 
 	// parse flags
 	syncpath := flag.String("sync", "", "Path to a valid synchronization file (*.a3sync)")
+	index_path := flag.String("index", "", "(only for admins) Path to a directory which should be indexed. Creates a *.a3sync file.")
+	output_path := flag.String("o", "", "(only for admins) Path to a directory where the *.a3sync file should be created.")
 	max_concurrent_downloads := flag.Int("n", 2, "Concurrent download limit")
 
 	flag.Parse()
@@ -210,7 +210,13 @@ func main() {
 	bps := new(counter.Counter)
 	client := &http.Client{}
 
-	if *syncpath != "" {
+	if *index_path != "" {
+		if *output_path != "" {
+
+		} else {
+			log.Println("missing -o parameter")
+		}
+	} else if *syncpath != "" {
 
 		//*syncpath = fmt.Sprintf("sync/%s", *syncpath)
 
@@ -264,5 +270,7 @@ func main() {
 				fmt.Printf("Kbyte/s: %.2f\n", float32(currentBps)/float32(1024))
 			}
 		}
+	} else {
+		flag.Usage()
 	}
 }
