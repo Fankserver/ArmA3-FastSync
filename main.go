@@ -97,7 +97,7 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 		if download {
 
 			// assemble http request
-			dlUrl := d.Url + d.Path
+			dlUrl := d.Url + filepath.Clean(d.Path)
 			log.Printf("%d dl url: %s", workRoutine, dlUrl)
 
 			req, err := http.NewRequest("GET", dlUrl, nil)
@@ -139,6 +139,7 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 			case http.StatusRequestedRangeNotSatisfiable:
 			default:
 				log.Printf("%d ERROR: %v (%s)", workRoutine, err, resp.Status)
+				return
 			}
 
 			// reset file if content is too long (file corrupted)
