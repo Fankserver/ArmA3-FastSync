@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	DL_ROOT = "/home/nano/go/src/A3FastSync/dl"
+	DL_ROOT = "dl"
 )
 
 type DownloadFile struct {
