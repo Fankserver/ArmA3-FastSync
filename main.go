@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	MAX_CONCURRENT_DOWNLOADS = 1
+	MAX_CONCURRENT_DOWNLOADS = 3
 	DEV_TEST_URL             = "http://teamspeak.fankservercdn.com/test.txt"
 	DL_ROOT                  = "/home/nano/go/src/A3FastSync/dl"
 )
@@ -148,6 +148,7 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 
 			// reset file if content is too long (file corrupted)
 			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				log.Printf("%d file corrupted - downloading again", workRoutine)
 				err = os.Remove(path)
 				if err != nil {
 					log.Printf("%d ERROR: %s", workRoutine, err)
@@ -179,10 +180,15 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 			hash := fmt.Sprintf("%x", hasher.Sum(nil))
 			log.Printf("%d computed checksum: %s", workRoutine, hash)
 			if hash != d.Checksum {
-				log.Printf("%d download error: checksum mismatch", workRoutine)
-				return
+				log.Printf("%d file corrupted - downloading again", workRoutine)
+				err = os.Remove(path)
+				if err != nil {
+					log.Printf("%d ERROR: %s", workRoutine, err)
+					return
+				}
+				continue
 			} else {
-				log.Printf("%d download successful: checksum matches", workRoutine)
+				log.Printf("%d download successful: valid checksum", workRoutine)
 			}
 		}
 		return
@@ -190,65 +196,73 @@ func (d *DownloadWork) DoWork(workRoutine int) {
 }
 
 func main() {
+	fmt.Println("# A3FastSync v.0.2 ALPHA")
+	fmt.Println("# (c) 2014 nano2k - http://sync.nano.sx\n")
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	workPool := workpool.New(runtime.NumCPU()*3, MAX_CONCURRENT_DOWNLOADS)
+	// parse flags
+	syncpath := flag.String("sync", "", "Path to a valid synchronization file (*.a3sync)")
+	max_concurrent_downloads := flag.Int("n", 2, "Concurrent download limit")
+
+	flag.Parse()
+
+	workPool := workpool.New(runtime.NumCPU()*3, int32(*max_concurrent_downloads))
 	bps := new(counter.Counter)
 	client := &http.Client{}
 
-	// parse flags
-	syncpath := flag.String("sync", "default.a3sync", "A3FastSync synchronization file")
-	flag.Parse()
-	*syncpath = fmt.Sprintf("sync/%s", *syncpath)
+	if *syncpath != "" {
 
-	// process input file
-	file, e := ioutil.ReadFile(*syncpath)
-	if e != nil {
-		log.Fatalf("%v\n", e)
-		return
-	}
+		//*syncpath = fmt.Sprintf("sync/%s", *syncpath)
 
-	var sync SynchFile
-	err := json.Unmarshal(file, &sync)
-	if err != nil {
-		log.Fatalf("sync file parse error (%s): %s", *syncpath, err)
-		return
-	}
-
-	filesPending := len(sync.Files)
-	log.Printf("Files: %d", filesPending)
-
-	go func() {
-		for k := range sync.Files {
-			work := &DownloadWork{
-				Url:      sync.Server,
-				Path:     sync.Files[k].Path,
-				Checksum: sync.Files[k].Checksum,
-				WP:       workPool,
-				CTR:      bps,
-				Client:   client,
-			}
-
-			err := workPool.PostWork("work_queue_routine", work)
-
-			if err != nil {
-				fmt.Printf("ERROR: %s\n", err)
-				time.Sleep(100 * time.Millisecond)
-			}
+		// process input file
+		file, e := ioutil.ReadFile(*syncpath)
+		if e != nil {
+			log.Fatalf("%v\n", e)
+			return
 		}
-	}()
 
-	for {
-		select {
-		// measure download speed
-		case <-time.After(time.Second):
-			if workPool.ActiveRoutines() < 1 {
-				log.Printf("no jobs available - finished")
-				return
+		var sync SynchFile
+		err := json.Unmarshal(file, &sync)
+		if err != nil {
+			log.Fatalf("sync file parse error (%s): %s", *syncpath, err)
+			return
+		}
+
+		filesPending := len(sync.Files)
+		log.Printf("Files: %d", filesPending)
+
+		go func() {
+			for k := range sync.Files {
+				work := &DownloadWork{
+					Url:      sync.Server,
+					Path:     sync.Files[k].Path,
+					Checksum: sync.Files[k].Checksum,
+					WP:       workPool,
+					CTR:      bps,
+					Client:   client,
+				}
+
+				err := workPool.PostWork("work_queue_routine", work)
+
+				if err != nil {
+					fmt.Printf("ERROR: %s\n", err)
+					time.Sleep(100 * time.Millisecond)
+				}
 			}
-			currentBps := bps.Value()
-			bps.Reset()
-			fmt.Printf("Mbyte/s: %.2f\n", float32(currentBps)/float32(1024*1024))
+		}()
+
+		for {
+			select {
+			// measure download speed
+			case <-time.After(time.Second):
+				if workPool.ActiveRoutines() < 1 {
+					log.Printf("no jobs available - finished")
+					return
+				}
+				currentBps := bps.Value()
+				bps.Reset()
+				fmt.Printf("Kbyte/s: %.2f\n", float32(currentBps)/float32(1024))
+			}
 		}
 	}
 }
